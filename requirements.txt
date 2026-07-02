@@ -1,0 +1,13 @@
+# Core (install the CUDA build of torch that matches your driver — see README)
+torch>=2.0
+torchvision>=0.15
+segmentation-models-pytorch>=0.3.3
+albumentations>=1.3.0
+opencv-python>=4.7
+numpy>=1.24
+scipy>=1.10
+tqdm>=4.65
+pyyaml>=6.0
+
+# Optional: only needed if you want MOTA/IDF1 tracking metrics in run_video.py
+# motmetrics>=1.4.0
