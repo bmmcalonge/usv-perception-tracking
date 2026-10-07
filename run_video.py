@@ -100,7 +100,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, H, W = load_model(args.ckpt, device)
 
-    imu_angles, K_cam = None, None
+    imu_angles, K_cam, R_cam_imu = None, None, None
     if args.imu:
         from imu import (load_euler_angles, load_calibration_K,
                          delta_homography, unwrap_euler_sequence)
@@ -112,7 +112,6 @@ def main():
         status = f"  R_cam_imu: {args.cam_imu_calib}" if R_cam_imu is not None else "  (no --cam-imu-calib: compensation inactive)"
         print(f"[imu] loaded {len(imu_angles)} frames  calib: {calib}{status}")
     angles_prev = None
-    R_cam_imu = None
     IH = args.infer_height or H
     IW = args.infer_width or W
     if (IH, IW) != (H, W):
