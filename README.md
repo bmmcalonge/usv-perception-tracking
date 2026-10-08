@@ -20,12 +20,24 @@ I come from controls and state estimation, so the design splits learned percepti
 
 ## Results
 
-| What | Result | How it was measured |
-|---|---|---|
-| **MODS benchmark** (94 sequences, 8,175 frames) | water-edge RMSE **18 px**, obstacle F1 **90.3%** (84.8% inside the 15 m danger zone) | official [mods_evaluation](https://github.com/bborja/mods_evaluation) toolkit, `analysis/mods_predict.py`. Precision / recall 92.5% / 88.1% (danger zone 77.0% / 94.4%). For reference, the example WaSR result in the toolkit README is 21 px and 91.4% (88.0%); not re-run here. |
-| MaSTr1325 validation mIoU | 0.991 (obstacle 0.979, water 0.996, sky 0.997) | random 85/15 image split (seed 0). **In-distribution and optimistic:** 70 of 198 val images have a near-identical training frame (`analysis/split_leakage.py`). |
-| End-to-end throughput | **69 FPS** | RTX 5070, fp32, batch 1, 512×384 inference on 1278×958 frames. Includes JPEG decode, drawing and MP4 encoding. Measured with the kope81 command below. |
-| Tracker self-tests | pass | `python tracker.py`: IDs survive a 3-frame dropout and tracking error drops from 3.68 to 2.73 px; camera-motion compensation keeps one ID under a steady pan and a rocking camera. |
+Current model: **v1.2**, the same U-Net / ResNet-34 trained with eWaSR's published training recipe (fixed before seeing any results). All numbers below come from the same RTX 5070, the same pipeline, and the same unmodified MODS toolkit.
+
+| MODS (94 sequences, 8,175 frames) | Water-edge RMSE | Obstacle F1 | F1 danger zone | Precision (danger zone) | Recall (danger zone) |
+|---|---|---|---|---|---|
+| v1: original recipe | 18 px | 90.3% | 84.8% | 92.5% (77.0%) | 88.1% (94.4%) |
+| **v1.2: eWaSR recipe** | **18 px** | **92.0%** | 85.6% | 95.9% (77.8%) | **88.4% (95.0%)** |
+| [eWaSR](https://github.com/tersekmatija/eWaSR) ResNet-18, camera only (released weights) | 21 px | 92.4% | 90.3% | 97.5% (87.7%) | 87.7% (93.1%) |
+
+| Speed (RTX 5070, fp32, batch 1, 512×384) | Network only | Full pipeline | GPU memory | Parameters |
+|---|---|---|---|---|
+| U-Net / ResNet-34 (v1 and v1.2) | 268 FPS | 103 FPS | 193 MiB | 24.4 M |
+| eWaSR ResNet-18 | 334 FPS | 112 FPS | 326 MiB | 60.3 M |
+
+- **Seeds.** Both recipes were trained with 3 seeds: obstacle F1 90.6 ± 0.4% (v1 recipe) vs 92.0 ± 0.7% (v1.2 recipe), and danger-zone F1 85.5 ± 0.6% vs 84.9 ± 0.6% (no change). False positives fell about 21% on average; one seed showed 47%, so the variance is high. v1.2 is the seed fixed in advance, not the best one.
+- **Where the gap to eWaSR is.** Recall is equal or better; the gap is false alarms below the horizon, mostly large blobs from fog bands, reflections of nearby boats and sun glare (`analysis/mods_fp_breakdown.py`). Close to the boat, v1.2's precision is 78% vs eWaSR's 88%.
+- **Throughput.** 69 FPS end to end including JPEG decode, drawing and MP4 encoding (the kope81 command below); 103 FPS for decode, segmentation, boxes and tracking alone (`analysis/benchmark_speed.py`).
+- **No MaSTr1325 validation score for v1.2, on purpose.** v1 held out 15% of MaSTr1325 and reported 0.991 mIoU, but 70 of those 198 images have a near-identical training frame (`analysis/split_leakage.py`). v1.2 trains on all 1,325 images and uses MODS as the test set.
+- **Tracker self-tests** (`python tracker.py`): IDs survive a 3-frame dropout and tracking error drops from 3.68 to 2.73 px; camera-motion compensation keeps one ID under a steady pan and a rocking camera.
 
 MODD2 and MODS have no track-ID annotations, so MOTA/IDF1/HOTA can't be computed here. Tracking is evaluated with self-tests and ground-truth-free proxies (below).
 
@@ -37,22 +49,22 @@ MODD2 logs IMU roll/pitch/yaw per frame. The camera←IMU rotation `R_cam_imu` c
 
 | Sequence | IMU vs camera rotation, corr (pitch / pan / roll) | Per-sequence fit vs `R_cam_imu` | Image-motion residual, none → IMU |
 |---|---|---|---|
-| kope75 | 0.91 / 0.97 / 0.90 | 4.2° | 6.22 → 2.28 px |
-| kope81 | 0.83 / 0.89 / 0.91 | 3.4° | 2.67 → 1.28 px |
-| kope82 | 0.85 / 0.81 / 0.86 | 5.2° | 10.89 → 3.76 px |
-| kope67 (2 sequences) | ≈0 / 0.83–0.99 / ≈0 | no rotation fits | 3.68 → 4.71 px, 1.63 → 1.85 px |
-| kope71 | ≈0 / 0.79 / ≈0 | no rotation fits | 8.02 → 14.64 px |
+| kope75 | 0.91 / 0.97 / 0.90 | 4.2° | 6.21 → 2.30 px |
+| kope81 | 0.83 / 0.89 / 0.91 | 3.4° | 2.69 → 1.28 px |
+| kope82 | 0.85 / 0.81 / 0.86 | 5.2° | 10.92 → 3.84 px |
+| kope67 (2 sequences) | ≈0 / 0.82–0.99 / ≈0 | no rotation fits | 3.73 → 4.70 px, 1.62 → 1.85 px |
+| kope71 | ≈0 / 0.77 / ≈0 | no rotation fits | 7.64 → 14.62 px |
 
 - **The calibration holds:** three independent sessions re-derive it within 3–5°.
 - **In the kope67 and kope71 sessions the IMU's pitch and roll don't follow the camera** (only yaw does), so compensation adds error there. In the good sessions the IMU readings are also offset from their frame labels by about one frame (an offset of −1 fits best).
 
-Effect on tracking (`analysis/imu_tracking_effect.py`), measured as IoU between each predicted box and its best-overlapping detection:
+Effect on tracking with the v1.2 model (`analysis/imu_tracking_effect.py`), measured as IoU between each predicted box and its best-overlapping detection:
 
 | Sequence | Camera motion (median) | No IMU | IMU compensation |
 |---|---|---|---|
-| kope82 (choppy, good IMU) | 0.65°/frame | median IoU 0.00 (mean 0.21) | **median IoU 0.70 (mean 0.55)** |
-| kope81 (calm, good IMU) | 0.16°/frame | 0.92 | 0.76 |
-| kope67 (pitch/roll unreliable) | 0.21°/frame | 0.74 | 0.68 |
+| kope82 (choppy, good IMU) | 0.65°/frame | median IoU 0.00 (mean 0.22) | **median IoU 0.72 (mean 0.58)** |
+| kope81 (calm, good IMU) | 0.16°/frame | 0.93 | 0.78 |
+| kope67 (pitch/roll unreliable) | 0.22°/frame | 0.64 | 0.47 |
 
 Compensation pays off when camera motion is large and erratic. On calm water the Kalman velocity already predicts the slow drift, and the IMU's ~1 px of noise makes predictions slightly worse.
 
@@ -77,13 +89,14 @@ pip install -r requirements.txt
 python tracker.py
 ```
 
-**Pretrained weights** (skip training):
+**Pretrained weights** (v1.2; skip training):
 ```bash
 mkdir -p runs/unet_r34
 wget -O runs/unet_r34/best.pt \
-  https://github.com/bmmcalonge/usv-perception-tracking/releases/download/v1.1/unet_r34_mastr1325.pt
-# sha256: acc51cfef620c33341480ec52d35f5b286f3a70d3b81cd71a46161d2e45c72b0
+  https://github.com/bmmcalonge/usv-perception-tracking/releases/download/v1.2/unet_r34_mastr1325_v1.2.pt
+# sha256: fee4ad696a07513212da406237624526c3a24b884d1a31c2e36c1cf588c6d42a
 ```
+The v1 weights stay available under release [v1.1](https://github.com/bmmcalonge/usv-perception-tracking/releases/tag/v1.1).
 
 ---
 
@@ -115,9 +128,11 @@ MODD2 frames are stereo interleaved, so always pass `--pattern '*L.jpg'`.
 ## Run
 
 ```bash
-# Train (40 epochs, ~10 min on an RTX 5070)
+# Train v1.2: eWaSR recipe, all 1,325 images, 50 epochs (~13 min on an RTX 5070)
 python train.py --img-dir data/MaSTr1325_images_512x384 --mask-dir data/MaSTr1325_masks_512x384 \
-                --arch unet --encoder resnet34 --epochs 40 --batch-size 8 --out runs/unet_r34
+                --arch unet --encoder resnet34 --epochs 50 --batch-size 8 \
+                --val-frac 0 --aug ewasr --loss focal_sep --out runs/unet_r34
+# v1 recipe: --epochs 40 and no --val-frac/--aug/--loss flags (85/15 split, cross-entropy)
 
 # Segmentation overlays on a folder of images
 python predict.py --ckpt runs/unet_r34/best.pt --img-dir sample_imgs --out-dir preds
@@ -162,12 +177,35 @@ git clone https://github.com/bborja/mods_evaluation data/mods/mods_evaluation
 cd data/mods/mods_evaluation   # toolkit deps: yacs colorama scikit-image matplotlib prettytable
 python modb_evaluation.py unet_r34 --config-file ../predictions/mods_config.yaml --workers 8
 
+# Where the false positives are (position, size, sequence), for several scored methods
+python analysis/mods_fp_breakdown.py --methods unet_r34 ewasr_resnet18
+
 # Near-duplicates across the MaSTr1325 train/val split
 python analysis/split_leakage.py --img-dir data/MaSTr1325_images_512x384
 
 # IMU vs camera rotation per sequence, and IMU effect on tracking
 python analysis/imu_vs_vision.py --ckpt runs/unet_r34/best.pt
 python analysis/imu_tracking_effect.py --ckpt runs/unet_r34/best.pt
+```
+
+### Comparison with eWaSR
+
+eWaSR pins `timm==0.6.5`, so it gets its own environment with the same torch build (versions used here: torch 2.12.0+cu130):
+```bash
+git clone https://github.com/tersekmatija/eWaSR ~/projects/ewasr/eWaSR
+python3 -m venv ~/projects/ewasr/venv
+~/projects/ewasr/venv/bin/pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/cu130
+~/projects/ewasr/venv/bin/pip install timm==0.6.5 opencv-python numpy scipy albumentations tqdm Pillow
+~/projects/ewasr/venv/bin/pip install --no-deps pytorch-lightning lightning-utilities torchmetrics fsspec pyyaml packaging typing-extensions
+mkdir -p ~/projects/ewasr/weights && wget -P ~/projects/ewasr/weights \
+  https://github.com/tersekmatija/eWaSR/releases/download/0.1.0/ewasr_resnet18.pth
+
+# speed: same script, once per environment
+python analysis/benchmark_speed.py --model ours --ckpt runs/unet_r34/best.pt
+~/projects/ewasr/venv/bin/python analysis/benchmark_speed.py --model ewasr
+
+# MODS masks for eWaSR, then score them with the toolkit as above (method name ewasr_resnet18)
+~/projects/ewasr/venv/bin/python analysis/mods_predict.py --model ewasr --mods-root data/mods
 ```
 
 ---
@@ -178,7 +216,7 @@ python analysis/imu_tracking_effect.py --ckpt runs/unet_r34/best.pt
 |------|------|
 | `data.py` | MaSTr1325 loader, label remap, mask colorizer |
 | `model.py` | segmentation model factory (smp: U-Net / DeepLabV3+ / FPN) |
-| `train.py` | training loop, streaming confusion-matrix mIoU, checkpointing |
+| `train.py` | training loop (v1 recipe, or eWaSR's augmentation and focal + separation loss), streaming confusion-matrix mIoU, checkpointing |
 | `predict.py` | `segment()`, the shared inference function; colorized overlays |
 | `detect.py` | obstacle mask → boxes (`all` / `adjacent` / `enclosed`, width and aspect filters) |
 | `viz_boxes.py` | segment → boxes on one image |
@@ -187,11 +225,13 @@ python analysis/imu_tracking_effect.py --ckpt runs/unet_r34/best.pt
 | `imu.py` | MODD2 IMU loader and inter-frame rotation homography `H = K·ΔR_cam·K⁻¹` |
 | `calibrate_imu.py` | camera←IMU rotation from stereo ground-plane PCA → `R_cam_imu.npy` |
 | `run_video.py` | segment → detect → track on a sequence → annotated video, FPS, optional IMU and MOT metrics |
-| `analysis/` | MODS predictions, split-leakage check, IMU-vs-vision check, IMU tracking effect |
+| `analysis/` | MODS predictions (this model or eWaSR), eWaSR adapter, speed benchmark, false-positive breakdown, split-leakage check, IMU-vs-vision check, IMU tracking effect |
 
 ---
 
 ## Design decisions and known limitations
+
+**Close-range false alarms.** Inside the 15 m danger zone about 1 in 5 obstacle alarms is false (precision 78% vs eWaSR's 88%), mostly reflections of nearby boats, fog and sun glare. Changing the training recipe didn't move this; eWaSR's architecture or more diverse training data (e.g. LaRS) are the next things to try.
 
 **Single obstacle class → geometric instances.** MaSTr1325 labels everything that isn't water or sky as one "obstacle" class, so the model can't tell a buoy from a shoreline. `detect.py` recovers instances with connected components, and `enclosed` mode keeps only blobs with water directly above them. This is a heuristic: it merges touching vessels into one box, and in `enclosed` mode coastline-only sequences produce no tracks. A dataset with instance labels (e.g. LaRS) and a detection head would be the next step.
 
@@ -199,9 +239,9 @@ python analysis/imu_tracking_effect.py --ckpt runs/unet_r34/best.pt
 
 **Constant-velocity motion model.** Tracks coast through missed detections for up to `--max-age` frames. The filter lags sharp maneuvers, and the camera's own rotation looks like target motion unless it's compensated (see the IMU section).
 
-**IoU-only association.** Fast small targets that don't overlap frame to frame won't associate, and similar-sized crossing targets can swap IDs. Appearance embeddings (DeepSORT/BoT-SORT style) would address this.
+**IoU-only association.** Fast small targets that don't overlap frame to frame won't associate, similar-sized crossing targets can swap IDs, and a track can carry over to another object when one leaves the view or passes in front of another. Appearance embeddings (DeepSORT/BoT-SORT style) would address this.
 
-**Evaluation scope.** The MaSTr1325 number is in-distribution and inflated by near-duplicate frames; MODS is the out-of-distribution test. There's no tracking ground truth, so tracking claims rest on self-tests and proxies. Night, fog and open-ocean conditions are untested.
+**Evaluation scope.** MODS is the test set. The recipe comparison rests on three seeds per recipe, and eWaSR on its single released model, whose own seed-to-seed spread is unknown. There's no tracking ground truth, so tracking claims rest on self-tests and proxies. Night and open-ocean conditions are untested, and throughput was measured on a desktop GPU, not an embedded board.
 
 ---
 
@@ -211,6 +251,8 @@ Datasets by the ViCoS lab, University of Ljubljana:
 - B. Bovcon, J. Muhovič, J. Perš, M. Kristan, "The MaSTr1325 dataset for training deep USV obstacle detection models," IROS 2019. (CC BY 4.0)
 - B. Bovcon, R. Mandeljc, J. Perš, M. Kristan, "Stereo obstacle detection for unmanned surface vehicles by IMU-assisted semantic segmentation," Robotics and Autonomous Systems, 2018. (MODD2)
 - B. Bovcon, J. Muhovič, D. Vranac, D. Mozetič, J. Perš, M. Kristan, "MODS — A USV-oriented object detection and obstacle segmentation benchmark," IEEE T-ITS, 2021.
+
+Comparison model and training recipe: M. Teršek, L. Žust, M. Kristan, "eWaSR — an embedded-compute-ready maritime obstacle detection network," Sensors, 2023 ([code](https://github.com/tersekmatija/eWaSR), Apache-2.0). The focal loss and water–obstacle separation loss in `train.py` are adapted from eWaSR's `wasr/loss.py` (changed to work with index labels); its license is in `licenses/eWaSR-LICENSE`.
 
 Tracking: A. Bewley et al., "Simple Online and Realtime Tracking," ICIP 2016; N. Aharon et al., "BoT-SORT: Robust Associations Multi-Pedestrian Tracking," 2022.
 
