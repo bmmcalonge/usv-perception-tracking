@@ -13,6 +13,13 @@ toolkit config <out>/mods_config.yaml with absolute paths. Then:
     python analysis/mods_predict.py --ckpt runs/unet_r34/best.pt --mods-root data/mods
     cd data/mods/mods_evaluation
     python modb_evaluation.py unet_r34 --config-file ../predictions/mods_config.yaml --workers 8
+
+The same script writes eWaSR's masks for a like-for-like comparison (run in eWaSR's
+environment, see analysis/ewasr_model.py):
+
+    ~/projects/ewasr/venv/bin/python analysis/mods_predict.py --model ewasr --mods-root data/mods
+    ~/projects/ewasr/venv/bin/python analysis/mods_predict.py --model ewasr_imu --mods-root data/mods \
+        --ewasr-weights ~/projects/ewasr/weights/ewasr_resnet18_imu.pth
 """
 
 import os
@@ -25,7 +32,6 @@ import torch
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from predict import load_model, segment
 
 # train id -> RGB color expected by the MODS toolkit (configs/mods.yaml INPUT_COLORS)
 MODS_COLORS = {0: (0, 0, 0), 1: (255, 0, 0), 2: (0, 255, 0)}   # obstacle, water, sky
@@ -33,16 +39,37 @@ MODS_COLORS = {0: (0, 0, 0), 1: (255, 0, 0), 2: (0, 255, 0)}   # obstacle, water
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--model", choices=["ours", "ewasr", "ewasr_imu"], default="ours")
+    ap.add_argument("--ckpt", default="runs/unet_r34/best.pt")
+    ap.add_argument("--ewasr-repo", default=os.path.expanduser("~/projects/ewasr/eWaSR"))
+    ap.add_argument("--ewasr-weights", default=os.path.expanduser("~/projects/ewasr/weights/ewasr_resnet18.pth"))
     ap.add_argument("--mods-root", default="data/mods", help="folder with mods.json and sequences/")
     ap.add_argument("--out", default=None, help="default: <mods-root>/predictions")
-    ap.add_argument("--method", default="unet_r34")
+    ap.add_argument("--method", default=None,
+                    help="name of the prediction folder (default: unet_r34 / ewasr_resnet18[_imu])")
+    ap.add_argument("--obstacle-conf", type=float, default=0.5,
+                    help="this repo's model only: obstacle confidence threshold, as in run_video.py "
+                         "(0.5 = plain argmax)")
     args = ap.parse_args()
 
     mods_root = os.path.abspath(args.mods_root)
     out = os.path.abspath(args.out or os.path.join(mods_root, "predictions"))
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model, H, W = load_model(args.ckpt, device)
+    if args.model == "ours":
+        from predict import load_model, segment
+        model, H, W = load_model(args.ckpt, device)
+        run = lambda rgb, imu_path: segment(model, rgb, H, W, device, obstacle_conf=args.obstacle_conf)
+        args.method = args.method or ("unet_r34" if args.obstacle_conf == 0.5
+                                      else f"unet_r34_conf{args.obstacle_conf:g}")
+    else:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from ewasr_model import load_ewasr, segment as ewasr_segment
+        variant = "ewasr_resnet18_imu" if args.model == "ewasr_imu" else "ewasr_resnet18"
+        model = load_ewasr(args.ewasr_repo, args.ewasr_weights, variant, device)
+        run = lambda rgb, imu_path: ewasr_segment(
+            model, rgb, device,
+            cv2.imread(imu_path, cv2.IMREAD_GRAYSCALE) if args.model == "ewasr_imu" else None)
+        args.method = args.method or variant
 
     with open(os.path.join(mods_root, "mods.json")) as f:
         sequences = json.load(f)["dataset"]["sequences"]
@@ -55,7 +82,8 @@ def main():
 
     for seq_name, img_name in tqdm(jobs, desc="MODS"):
         bgr = cv2.imread(os.path.join(mods_root, "sequences", seq_name, "frames", img_name))
-        mask = segment(model, cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), H, W, device)
+        imu_path = os.path.join(mods_root, "sequences", seq_name, "imus", os.path.splitext(img_name)[0] + ".png")
+        mask = run(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), imu_path)
         rgb = np.zeros((*mask.shape, 3), np.uint8)
         for cid, color in MODS_COLORS.items():
             rgb[mask == cid] = color
